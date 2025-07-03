@@ -76,7 +76,7 @@ Once the bot is running and invited to your Discord server:
 
 ## Important Notes
 
-*   **API Key Security**: Your Gemini API Key is sensitive. The `/apikey` command stores it in the bot's memory for the current session. For production environments, consider more robust secret management strategies if the bot is hosted persistently. The `.env` file for the Discord token is a good first step for local development.
+*   **API Key Security**: Your Gemini API Key is sensitive. The `/apikey` command stores it in the bot's memory for the current session. For production environments, consider more robust secret management strategies if the bot is hosted persistently. The `.env` file for the Discord token is a good first step for local development. Make sure to instantly delete the response from the bot when doing the `/apikey` command. This will prevent users from stealing it.
 *   **Administrator Permissions**: Ensure that only trusted users have administrator permissions on your Discord server, as they will be able to set the API key and model.
 *   **Rate Limits & Quotas**: Be mindful of Gemini API rate limits and quotas. High usage might require checking your Google Cloud project settings.
 *   **Error Handling**: The bot includes basic error handling for API communication and command usage. Check the bot's console output for more detailed error logs if needed.
@@ -93,5 +93,3 @@ Once the bot is running and invited to your Discord server:
     *   Ensure an admin has successfully used `/model` with a valid and available model name.
     *   Check the bot's console for any specific error messages from the Gemini API.
 *   **"Missing Permissions"**: You are trying to use an admin-only command (`/apikey`, `/model`) without having administrator rights on the server.
-
-Enjoy using your Gemini-powered Discord bot!
