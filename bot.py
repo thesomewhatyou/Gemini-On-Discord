@@ -101,7 +101,7 @@ def validate_model_name(model_name: str) -> bool:
 def sanitize_error_message(error: str) -> str:
     """Sanitize error messages to prevent information disclosure"""
     # Remove potential API keys or sensitive info
-    sanitized = re.sub(r'AIza[a-zA-Z0-9_-]{35,}', '[API_KEY_REDACTED]', str(error))
+    sanitized = re.sub(r'AIza[a-zA-Z0-9_-]{31,}', '[API_KEY_REDACTED]', str(error))
     sanitized = re.sub(r'Bearer [a-zA-Z0-9_.-]+', '[TOKEN_REDACTED]', sanitized)
     return sanitized
 
