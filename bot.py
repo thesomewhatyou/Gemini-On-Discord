@@ -14,7 +14,7 @@ import json
 import asyncio
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load env
 load_dotenv()
 
 # Setup logging
@@ -99,8 +99,8 @@ class ConversationHistory:
                 "parts": [{"text": msg.content}]
             })
         return context
-# --- Global Variables for Gemini ---
-# Using class-based approach for better encapsulation
+# --- Global Variables for Gemini --- Is Grammarly deadass correcting my code
+# Using a class-based approach for better encapsulation
 class BotState:
     def __init__(self):
         self.gemini_api_key: Optional[str] = None
@@ -171,6 +171,7 @@ def validate_api_key(api_key: str) -> bool:
     if not api_key or not isinstance(api_key, str):
         return False
     # Basic validation - should start with 'AIza' and be at least 35 characters
+    # Holy shit it is correcting my code Grammarly sybau 
     return api_key.startswith('AIza') and len(api_key) >= 35
 
 def validate_model_name(model_name: str) -> bool:
@@ -343,7 +344,7 @@ async def model(interaction: discord.Interaction, model_name: str):
             bot_state.gemini_model = None
             bot_state.increment_stat("errors")
     else:
-        # If API key is not set, we can still set the model name, but can't initialize the model object yet.
+        # We can't initialize the model obj so we just gotta cache it. That's a later question
         # The model object will be initialized when /ask is called, or if /apikey is called after /model.
         await interaction.response.send_message(
             f"📝 Gemini model name set to: `{bot_state.selected_model_name}`. "
@@ -352,7 +353,8 @@ async def model(interaction: discord.Interaction, model_name: str):
         )
         logger.info(f"Gemini model name set to {bot_state.selected_model_name} by {interaction.user.name} (API key pending)")
 
-
+        # Grammarly fuckign sucks i just want to write code
+        # STOP CORRECTING MY CODE COMMENTS 
 @model.error
 async def model_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     """Error handler for model command"""
@@ -483,7 +485,7 @@ async def ask(interaction: discord.Interaction, query: str):
                 generation_config=generation_config
             )
 
-        # Extract response text
+        # Extract response text. We milk it like a cow. Sorry Google that's on you pal
         if response and response.parts:
             full_response_text = "".join(part.text for part in response.parts if hasattr(part, 'text'))
             if not full_response_text.strip():
@@ -505,7 +507,7 @@ async def ask(interaction: discord.Interaction, query: str):
         # Format response based on user preference
         formatted_response = format_response_by_preference(full_response_text, user_prefs.preferred_response_format)
 
-        # Handle long responses
+        # Handle long responses by sending a text file. It should work 
         if len(formatted_response) > MAX_RESPONSE_LENGTH:
             temp_file = None
             try:
@@ -530,7 +532,7 @@ async def ask(interaction: discord.Interaction, query: str):
                     except Exception as cleanup_error:
                         logger.warning(f"Failed to cleanup temp file {temp_file}: {cleanup_error}")
         else:
-            # Send formatted response
+            # Send formatted response. It probably works.
             history_indicator = "🧠 " if user_prefs.use_conversation_history else ""
             final_response = f"{history_indicator}**Query:** {query}\n\n**{bot_state.selected_model_name} says:**\n{formatted_response}"
             await interaction.followup.send(final_response)
@@ -540,7 +542,7 @@ async def ask(interaction: discord.Interaction, query: str):
         logger.error(f"Gemini API error for user {interaction.user.name}: {sanitize_error_message(str(e))}")
         bot_state.increment_stat("errors")
         
-        # Check for specific error types
+        # Check for specific error types. This one definitely does NOT work
         if "API_KEY_INVALID" in str(e) or "API_KEY_MISSING" in str(e) or "403" in str(e):
              error_message += "\n💡 Please ensure the Gemini API key is correctly set by an administrator using `/apikey`."
         elif "MODEL_NOT_FOUND" in str(e) or "404" in str(e):
@@ -670,6 +672,7 @@ async def preferences(interaction: discord.Interaction, setting: str = None, val
         )
 
 # --- Slash Command: /conversation ---
+# I can't read Python. I should've chose JavaScript 
 @bot.tree.command(name="conversation", description="Manage your conversation history.")
 @app_commands.describe(action="Action to perform on conversation history")
 @app_commands.choices(action=[
@@ -781,12 +784,12 @@ async def status(interaction: discord.Interaction):
     embed.add_field(name="Model", value=model_status, inline=True)
     embed.add_field(name="Model Ready", value=model_ready, inline=True)
     
-    # Usage statistics
+    # Usage statistics. I didn't test this
     embed.add_field(name="Total Queries", value=bot_state.usage_stats["queries"], inline=True)
     embed.add_field(name="Total Errors", value=bot_state.usage_stats["errors"], inline=True)
     embed.add_field(name="Filtered Queries", value=bot_state.usage_stats["filtered_queries"], inline=True)
     
-    # User-specific status
+    # User-specific status. I'm stupid so this probably won't work
     history_count = len(bot_state.conversation_history.get_history(user_id))
     has_active_chat = user_id in bot_state.active_chats
     
@@ -937,6 +940,16 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"An unexpected error occurred: {e}")
             print(f"An unexpected error occurred: {e}")
+        # I cannot actually tell if this will gracefully shutdown. If anything the user is probably running this on a cloud server and will shut the VM off without any sort of knowledge 
+        # knowing that the bot will spasm out and die. 
+        # TO-DO: Program it with feelings so the user feels pity
         finally:
             logger.info("Bot has shut down.")
             print("Bot has shut down.")
+
+            
+        # I hope Grammarly does not shut down gracefully
+        # I cannot actually tell if this will gracefully shutdown. If anything the user is probably running this on a cloud server
+        # and will shut the VM off without any sort of knowledge 
+        # knowing that the bot will spasm out and die. 
+        # TO-DO: Program it with feelings so the user feels pity
