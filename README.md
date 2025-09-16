@@ -18,12 +18,19 @@ This Discord bot allows users to interact with Google's Gemini models directly f
 -   **Secure File Handling**: Temporary files use cryptographically secure random names
 -   **Memory-only Storage**: API keys are stored securely in memory only (not on disk)
 
+### 🧠 Advanced AI Features
+-   **Conversation History**: AI maintains context across multiple queries for more natural conversations
+-   **User Preferences**: Customize AI behavior with adjustable temperature, max tokens, and response formats
+-   **Content Filtering**: Multi-level content filtering (low/medium/high) to prevent inappropriate queries
+-   **Response Formatting**: Choose between standard, detailed, or concise response formats
+-   **Smart Context Management**: Automatic conversation history management with export capabilities
+
 ### 📊 Additional Features
--   **Status Monitoring**: Use `/status` to check bot configuration and usage statistics
+-   **Enhanced Status Monitoring**: Detailed bot status with user-specific information and usage statistics
 -   **Model Information**: `/models` command lists available Gemini models with descriptions
--   **Comprehensive Help**: `/help` command provides detailed usage instructions
--   **Usage Statistics**: Tracks queries and errors for monitoring purposes
--   **Structured Logging**: Comprehensive logging for debugging and monitoring
+-   **Comprehensive Help**: `/help` command provides detailed usage instructions for all features
+-   **Usage Statistics**: Tracks queries, errors, and filtered content for monitoring purposes
+-   **Personal Settings**: Per-user customizable AI interaction preferences
 
 ## Prerequisites
 
@@ -72,26 +79,43 @@ Once the bot is running and invited to your Discord server:
 1.  **`/ask [query]`**
     *   **Description**: Ask a question or provide a prompt to the configured Gemini model.
     *   **Usage**: `/ask query:What is the capital of France?`
-    *   **Features**: 
-        - 5-second cooldown between queries per user
-        - Automatic handling of long responses
-        - Input validation and length limits
-    *   The bot will respond with the AI-generated answer.
+    *   **Enhanced Features**: 
+        - 🧠 **Conversation History**: AI remembers previous messages for context
+        - 🎛️ **Personal Settings**: Uses your custom temperature and token settings
+        - 🚫 **Content Filtering**: Automatically filters inappropriate content
+        - 📝 **Response Formats**: Respects your preferred response format (standard/detailed/concise)
+        - ⏰ **Rate Limiting**: 5-second cooldown between queries per user
+    *   The bot will respond with the AI-generated answer, maintaining conversation context.
 
-2.  **`/status`**
-    *   **Description**: Check the current bot status and configuration.
-    *   **Usage**: `/status`
-    *   **Shows**: API key status, selected model, usage statistics
+2.  **`/preferences [setting] [value]`** ⭐ NEW
+    *   **Description**: View and customize your AI interaction preferences.
+    *   **Usage**: `/preferences` (view all) or `/preferences setting:temperature value:0.8`
+    *   **Available Settings**:
+        - `temperature` (0.0-1.0): Controls AI creativity (0.0 = focused, 1.0 = creative)
+        - `max_tokens` (1-2048): Maximum response length
+        - `conversation_history` (true/false): Enable/disable conversation memory
+        - `content_filter_level` (low/medium/high): Content filtering strictness
+        - `response_format` (text/detailed/concise): Response formatting style
 
-3.  **`/models`**
+3.  **`/conversation [action]`** ⭐ NEW
+    *   **Description**: Manage your conversation history and context.
+    *   **Actions**:
+        - `view`: See your recent conversation history
+        - `clear`: Reset conversation history and start fresh
+        - `export`: Download your conversation history as a text file
+    *   **Usage**: `/conversation action:view`
+
+4.  **`/status`**
+    *   **Description**: Check bot status, configuration, and your personal settings.
+    *   **Enhanced Info**: Now shows conversation history count, active chat status, and your preferences
+
+5.  **`/models`**
     *   **Description**: List available Gemini models and their descriptions.
     *   **Usage**: `/models`
-    *   **Helpful for**: Understanding which models are available
 
-4.  **`/help`**
-    *   **Description**: Display comprehensive help information.
-    *   **Usage**: `/help`
-    *   **Shows**: All commands, setup instructions, and security features
+6.  **`/help`**
+    *   **Description**: Display comprehensive help information including new features.
+    *   **Updated**: Now includes documentation for all enhanced features
 
 ### 👑 Administrator Commands
 
@@ -118,6 +142,13 @@ Once the bot is running and invited to your Discord server:
 *   **Error Sanitization**: Sensitive information is automatically removed from error messages
 *   **Secure File Handling**: Temporary files use cryptographically secure random names
 *   **Memory-only Storage**: API keys are stored securely in memory only, never on disk
+
+### Enhanced User Experience
+*   **Conversation Memory**: The bot now remembers your previous messages and maintains context across the conversation, making interactions more natural and coherent.
+*   **Personal AI Settings**: Customize how the AI responds to you with adjustable temperature (creativity), max tokens (response length), and response formatting.
+*   **Smart Content Filtering**: Multi-level content filtering automatically prevents inappropriate queries while allowing legitimate use cases.
+*   **Flexible Response Formats**: Choose how you want responses formatted - standard text, detailed explanations, or concise summaries.
+*   **Conversation Management**: Export your chat history, view recent conversations, or clear history to start fresh.
 
 ### Security Best Practices
 *   **API Key Security**: Your Gemini API Key is sensitive. The `/apikey` command stores it in the bot's memory for the current session. For production environments, consider more robust secret management strategies if the bot is hosted persistently. **Always delete the response message immediately after using `/apikey`** to prevent users from stealing it.

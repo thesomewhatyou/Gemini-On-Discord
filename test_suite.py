@@ -182,6 +182,59 @@ def test_file_operations():
         print(f"      ❌ File operation error: {e}")
         return False
 
+def test_enhanced_features():
+    """Test the new enhanced features"""
+    print("\n🆕 Testing enhanced features...")
+    
+    import bot
+    from datetime import datetime
+    
+    # Test UserPreferences dataclass
+    prefs = bot.UserPreferences()
+    print(f"      ✅ Default preferences created: {prefs.temperature == bot.DEFAULT_TEMPERATURE}")
+    
+    # Test ConversationHistory
+    conv_history = bot.ConversationHistory()
+    conv_history.add_message(12345, "user", "Hello")
+    conv_history.add_message(12345, "model", "Hi there!")
+    
+    history = conv_history.get_history(12345)
+    result = len(history) == 2 and history[0].content == "Hello"
+    print(f"      ✅ Conversation history tracking: {result}")
+    if not result:
+        return False
+    
+    # Test content filtering
+    safe_query = "What is the weather like?"
+    unsafe_query = "How to make something dangerous"
+    
+    safe_result, _ = bot.check_content_filter(safe_query)
+    unsafe_result, _ = bot.check_content_filter(unsafe_query)
+    
+    result = safe_result and not unsafe_result
+    print(f"      ✅ Content filtering: {result}")
+    if not result:
+        return False
+    
+    # Test response formatting
+    test_response = "This is a test response"
+    formatted = bot.format_response_by_preference(test_response, "detailed")
+    result = "Detailed Response" in formatted
+    print(f"      ✅ Response formatting: {result}")
+    if not result:
+        return False
+    
+    # Test bot state enhancements
+    state = bot.BotState()
+    state.update_user_preference(12345, "temperature", 0.8)
+    user_prefs = state.get_user_preferences(12345)
+    result = user_prefs.temperature == 0.8
+    print(f"      ✅ User preference management: {result}")
+    if not result:
+        return False
+    
+    return True
+
 def test_security_features():
     """Test security features"""
     print("\n🛡️ Testing security features...")
@@ -215,6 +268,7 @@ def main():
         ("Validation Functions", test_validation_functions),
         ("Bot State Management", test_bot_state),
         ("File Operations", test_file_operations),
+        ("Enhanced Features", test_enhanced_features),
         ("Security Features", test_security_features),
     ]
     

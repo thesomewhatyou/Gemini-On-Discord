@@ -7,8 +7,11 @@ import logging
 import tempfile
 import secrets
 import re
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+import json
+import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -31,10 +34,71 @@ MAX_QUERY_LENGTH = 2000     # Maximum query length
 TEMP_FILE_PREFIX = "gemini_response_"
 VALID_MODEL_PATTERN = r"^gemini-[0-9]+\.[0-9]+(-[a-z]+)?(-[a-z0-9]+)?$"
 COOLDOWN_SECONDS = 5        # Cooldown between /ask commands
+MAX_CONVERSATION_HISTORY = 10  # Maximum messages to keep in conversation history
+DEFAULT_TEMPERATURE = 0.7   # Default model temperature
+DEFAULT_MAX_TOKENS = 1000   # Default max output tokens
+
+# Content filtering keywords - basic implementation
+BLOCKED_CONTENT = [
+    'violence', 'harmful', 'illegal', 'explicit', 'nsfw', 
+    'dangerous', 'offensive', 'hate speech'
+]
 
 # --- Bot Configuration ---
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
+# --- Data Classes for Enhanced Features ---
+@dataclass
+class UserPreferences:
+    """User-specific preferences for AI interactions"""
+    temperature: float = DEFAULT_TEMPERATURE
+    max_tokens: int = DEFAULT_MAX_TOKENS
+    use_conversation_history: bool = True
+    content_filter_level: str = "medium"  # low, medium, high
+    preferred_response_format: str = "text"  # text, detailed, concise
+
+@dataclass 
+class ConversationMessage:
+    """Represents a message in conversation history"""
+    role: str  # "user" or "model" 
+    content: str
+    timestamp: datetime = field(default_factory=datetime.now)
+
+class ConversationHistory:
+    """Manages conversation history for users"""
+    def __init__(self):
+        self.conversations: Dict[int, List[ConversationMessage]] = {}
+    
+    def add_message(self, user_id: int, role: str, content: str):
+        """Add a message to user's conversation history"""
+        if user_id not in self.conversations:
+            self.conversations[user_id] = []
+        
+        self.conversations[user_id].append(ConversationMessage(role, content))
+        
+        # Keep only recent messages
+        if len(self.conversations[user_id]) > MAX_CONVERSATION_HISTORY * 2:  # *2 for user+model pairs
+            self.conversations[user_id] = self.conversations[user_id][-MAX_CONVERSATION_HISTORY * 2:]
+    
+    def get_history(self, user_id: int) -> List[ConversationMessage]:
+        """Get conversation history for user"""
+        return self.conversations.get(user_id, [])
+    
+    def clear_history(self, user_id: int):
+        """Clear conversation history for user"""
+        if user_id in self.conversations:
+            del self.conversations[user_id]
+    
+    def get_context_for_gemini(self, user_id: int) -> List[Dict[str, str]]:
+        """Format conversation history for Gemini API"""
+        history = self.get_history(user_id)
+        context = []
+        for msg in history[-MAX_CONVERSATION_HISTORY:]:  # Get recent messages
+            context.append({
+                "role": msg.role,
+                "parts": [{"text": msg.content}]
+            })
+        return context
 # --- Global Variables for Gemini ---
 # Using class-based approach for better encapsulation
 class BotState:
@@ -43,7 +107,10 @@ class BotState:
         self.selected_model_name: Optional[str] = None
         self.gemini_model: Optional[Any] = None
         self.user_cooldowns: Dict[int, datetime] = {}
-        self.usage_stats: Dict[str, int] = {"queries": 0, "errors": 0}
+        self.usage_stats: Dict[str, int] = {"queries": 0, "errors": 0, "filtered_queries": 0}
+        self.user_preferences: Dict[int, UserPreferences] = {}
+        self.conversation_history = ConversationHistory()
+        self.active_chats: Dict[int, Any] = {}  # Active Gemini chat sessions per user
     
     def is_user_on_cooldown(self, user_id: int) -> bool:
         """Check if user is on cooldown"""
@@ -59,6 +126,20 @@ class BotState:
         """Increment usage statistics"""
         if stat in self.usage_stats:
             self.usage_stats[stat] += 1
+    
+    def get_user_preferences(self, user_id: int) -> UserPreferences:
+        """Get user preferences, creating defaults if needed"""
+        if user_id not in self.user_preferences:
+            self.user_preferences[user_id] = UserPreferences()
+        return self.user_preferences[user_id]
+    
+    def update_user_preference(self, user_id: int, setting: str, value: Any):
+        """Update a specific user preference"""
+        prefs = self.get_user_preferences(user_id)
+        if hasattr(prefs, setting):
+            setattr(prefs, setting, value)
+            return True
+        return False
 
 bot_state = BotState()
 
@@ -116,6 +197,47 @@ def create_secure_temp_file(content: str) -> str:
     ) as f:
         f.write(content)
         return f.name
+
+def check_content_filter(text: str, filter_level: str = "medium") -> tuple[bool, str]:
+    """
+    Basic content filtering
+    Returns (is_safe, reason) tuple
+    """
+    text_lower = text.lower()
+    
+    # High filter level - strict checking
+    if filter_level == "high":
+        blocked_words = BLOCKED_CONTENT + ['inappropriate', 'controversial', 'sensitive']
+    # Medium filter level - moderate checking  
+    elif filter_level == "medium":
+        blocked_words = BLOCKED_CONTENT
+    # Low filter level - minimal checking
+    else:
+        blocked_words = ['violence', 'illegal', 'dangerous']
+    
+    for word in blocked_words:
+        if word in text_lower:
+            return False, f"Content contains potentially inappropriate material: '{word}'"
+    
+    # Check for excessive length or suspicious patterns
+    if len(text) > MAX_QUERY_LENGTH:
+        return False, f"Query exceeds maximum length of {MAX_QUERY_LENGTH} characters"
+    
+    return True, "Content passed filtering"
+
+def format_response_by_preference(response: str, format_type: str) -> str:
+    """Format response based on user preference"""
+    if format_type == "concise":
+        # Try to shorten response while keeping key information
+        lines = response.split('\n')
+        if len(lines) > 3:
+            return '\n'.join(lines[:3]) + '\n...\n*(Response truncated for concise format)*'
+        return response
+    elif format_type == "detailed":
+        # Add more context and formatting
+        return f"**Detailed Response:**\n\n{response}\n\n*Generated with enhanced detail formatting*"
+    else:  # text (default)
+        return response
 
 # --- Placeholder for Commands (will be implemented in next steps) ---
 
@@ -255,24 +377,32 @@ async def model_error(interaction: discord.Interaction, error: app_commands.AppC
 async def ask(interaction: discord.Interaction, query: str):
     """
     Sends a query to the configured Gemini model and returns the response.
+    Enhanced with conversation history and content filtering.
     """
+    user_id = interaction.user.id
+    
     # Check cooldown
-    if bot_state.is_user_on_cooldown(interaction.user.id):
+    if bot_state.is_user_on_cooldown(user_id):
         await interaction.response.send_message(
             f"⏰ Please wait {COOLDOWN_SECONDS} seconds between queries.",
             ephemeral=True
         )
         return
     
-    # Validate query length
-    if len(query) > MAX_QUERY_LENGTH:
+    # Get user preferences
+    user_prefs = bot_state.get_user_preferences(user_id)
+    
+    # Content filtering
+    is_safe, filter_reason = check_content_filter(query, user_prefs.content_filter_level)
+    if not is_safe:
         await interaction.response.send_message(
-            f"❌ Query too long. Maximum length is {MAX_QUERY_LENGTH} characters.",
+            f"🚫 Content Filter: {filter_reason}",
             ephemeral=True
         )
+        bot_state.increment_stat("filtered_queries")
         return
     
-    # Basic content filtering
+    # Basic query validation
     if not query.strip():
         await interaction.response.send_message(
             "❌ Please provide a valid query.",
@@ -294,11 +424,10 @@ async def ask(interaction: discord.Interaction, query: str):
         )
         return
 
-    # Attempt to initialize the model if it hasn't been already
-    # (e.g., if /model was called before /apikey)
+    # Initialize model if needed
     if bot_state.gemini_model is None:
         try:
-            genai.configure(api_key=bot_state.gemini_api_key) # Ensure genai is configured
+            genai.configure(api_key=bot_state.gemini_api_key)
             bot_state.gemini_model = genai.GenerativeModel(bot_state.selected_model_name)
             logger.info(f"Gemini model '{bot_state.selected_model_name}' initialized on demand by /ask command.")
         except Exception as e:
@@ -312,34 +441,56 @@ async def ask(interaction: discord.Interaction, query: str):
             bot_state.increment_stat("errors")
             return
 
-    if bot_state.gemini_model is None: # Should not happen if above logic is correct, but as a safeguard
-        await interaction.response.send_message(
-            "❌ Model could not be initialized. Please ask an Admin to check the `/model` and `/apikey` settings.",
-            ephemeral=True
-        )
-        return
-
     # Set user cooldown
-    bot_state.set_user_cooldown(interaction.user.id)
+    bot_state.set_user_cooldown(user_id)
     
-    await interaction.response.defer(ephemeral=False) # Defer while we wait for API
+    await interaction.response.defer(ephemeral=False)
 
     try:
         logger.info(f"User {interaction.user.name} asked: '{query[:100]}...' using model {bot_state.selected_model_name}")
         bot_state.increment_stat("queries")
         
-        # For simplicity, using generate_content. For chat history, use start_chat.
-        response = await bot_state.gemini_model.generate_content_async(query)
+        # Use conversation history if enabled
+        if user_prefs.use_conversation_history:
+            # Get or create chat session for this user
+            if user_id not in bot_state.active_chats:
+                # Create new chat with conversation history
+                history = bot_state.conversation_history.get_context_for_gemini(user_id)
+                bot_state.active_chats[user_id] = bot_state.gemini_model.start_chat(history=history)
+            
+            chat = bot_state.active_chats[user_id]
+            
+            # Generate configuration for the model
+            generation_config = genai.types.GenerationConfig(
+                temperature=user_prefs.temperature,
+                max_output_tokens=user_prefs.max_tokens,
+            )
+            
+            response = await chat.send_message_async(query, generation_config=generation_config)
+            
+            # Store in conversation history
+            bot_state.conversation_history.add_message(user_id, "user", query)
+            
+        else:
+            # Single query without history
+            generation_config = genai.types.GenerationConfig(
+                temperature=user_prefs.temperature,
+                max_output_tokens=user_prefs.max_tokens,
+            )
+            
+            response = await bot_state.gemini_model.generate_content_async(
+                query, 
+                generation_config=generation_config
+            )
 
-        # Check if the response has parts and text
+        # Extract response text
         if response and response.parts:
-            # Concatenate text from all parts
             full_response_text = "".join(part.text for part in response.parts if hasattr(part, 'text'))
-            if not full_response_text.strip(): # Handle cases where parts exist but text is empty
+            if not full_response_text.strip():
                  full_response_text = "The model generated an empty response."
-        elif hasattr(response, 'text') and response.text: # Fallback for simpler response structures
+        elif hasattr(response, 'text') and response.text:
             full_response_text = response.text
-        else: # Handle cases where response might be empty or in an unexpected format
+        else:
             candidate = response.candidates[0] if response.candidates else None
             if candidate and candidate.content and candidate.content.parts:
                 full_response_text = "".join(part.text for part in candidate.content.parts if hasattr(part, 'text'))
@@ -347,13 +498,18 @@ async def ask(interaction: discord.Interaction, query: str):
                 full_response_text = "Sorry, I couldn't get a valid response from the model. The response structure was unexpected."
                 logger.warning(f"Unexpected response structure: {response}")
 
-        # Discord has a 2000 character limit per message.
-        # If the response is longer, we need to split it or send as a file.
-        if len(full_response_text) > MAX_RESPONSE_LENGTH:
-            # Sending as a file for longer responses
+        # Store model response in conversation history
+        if user_prefs.use_conversation_history:
+            bot_state.conversation_history.add_message(user_id, "model", full_response_text)
+
+        # Format response based on user preference
+        formatted_response = format_response_by_preference(full_response_text, user_prefs.preferred_response_format)
+
+        # Handle long responses
+        if len(formatted_response) > MAX_RESPONSE_LENGTH:
             temp_file = None
             try:
-                temp_file = create_secure_temp_file(full_response_text)
+                temp_file = create_secure_temp_file(formatted_response)
                 await interaction.followup.send(
                     f"📄 The response from **{bot_state.selected_model_name}** was too long to display directly. "
                     "Here it is as a text file:",
@@ -365,46 +521,251 @@ async def ask(interaction: discord.Interaction, query: str):
                     f"⚠️ The response from **{bot_state.selected_model_name}** was too long to display directly, "
                     "and I encountered an error trying to send it as a file. "
                     "The first 1900 characters are:\n```\n"
-                    f"{full_response_text[:1900]}...\n```"
+                    f"{formatted_response[:1900]}...\n```"
                 )
             finally:
-                # Clean up temporary file
                 if temp_file and os.path.exists(temp_file):
                     try:
                         os.remove(temp_file)
                     except Exception as cleanup_error:
                         logger.warning(f"Failed to cleanup temp file {temp_file}: {cleanup_error}")
         else:
-            # Format response nicely
-            formatted_response = f"**Query:** {query}\n\n**{bot_state.selected_model_name} says:**\n{full_response_text}"
-            await interaction.followup.send(formatted_response)
+            # Send formatted response
+            history_indicator = "🧠 " if user_prefs.use_conversation_history else ""
+            final_response = f"{history_indicator}**Query:** {query}\n\n**{bot_state.selected_model_name} says:**\n{formatted_response}"
+            await interaction.followup.send(final_response)
 
     except Exception as e:
         error_message = f"❌ An error occurred while communicating with the Gemini API: {sanitize_error_message(str(e))}"
         logger.error(f"Gemini API error for user {interaction.user.name}: {sanitize_error_message(str(e))}")
         bot_state.increment_stat("errors")
         
-        # Check for specific error types if possible, e.g., API key issues, model not found, quota limits
+        # Check for specific error types
         if "API_KEY_INVALID" in str(e) or "API_KEY_MISSING" in str(e) or "403" in str(e):
              error_message += "\n💡 Please ensure the Gemini API key is correctly set by an administrator using `/apikey`."
-        elif "MODEL_NOT_FOUND" in str(e) or "404" in str(e): # Simple check for model not found
+        elif "MODEL_NOT_FOUND" in str(e) or "404" in str(e):
              error_message += f"\n💡 The model '{bot_state.selected_model_name}' might be invalid or unavailable. " \
                              "Please ask an administrator to check the model name using `/model`."
         elif "QUOTA_EXCEEDED" in str(e) or "429" in str(e):
              error_message += "\n💡 API quota exceeded. Please try again later or contact an administrator."
 
-        # Check if the interaction has already been responded to or deferred
         if interaction.is_done():
             await interaction.followup.send(error_message)
         else:
-            # This path might not be typically hit if we defer() correctly
             await interaction.response.send_message(error_message, ephemeral=True)
 
+
+# --- Slash Command: /preferences ---
+@bot.tree.command(name="preferences", description="View and manage your AI interaction preferences.")
+@app_commands.describe(
+    setting="The preference setting to change",
+    value="The new value for the setting"
+)
+@app_commands.choices(setting=[
+    app_commands.Choice(name="temperature", value="temperature"),
+    app_commands.Choice(name="max_tokens", value="max_tokens"),
+    app_commands.Choice(name="conversation_history", value="use_conversation_history"),
+    app_commands.Choice(name="content_filter_level", value="content_filter_level"),
+    app_commands.Choice(name="response_format", value="preferred_response_format"),
+])
+async def preferences(interaction: discord.Interaction, setting: str = None, value: str = None):
+    """View or update user preferences for AI interactions"""
+    user_id = interaction.user.id
+    user_prefs = bot_state.get_user_preferences(user_id)
+    
+    # If no setting specified, show current preferences
+    if setting is None:
+        embed = discord.Embed(
+            title="🎛️ Your AI Preferences",
+            color=discord.Color.blue(),
+            description="Current settings for your AI interactions"
+        )
+        
+        embed.add_field(
+            name="Temperature",
+            value=f"{user_prefs.temperature} (0.0 = focused, 1.0 = creative)",
+            inline=True
+        )
+        embed.add_field(
+            name="Max Tokens",
+            value=f"{user_prefs.max_tokens}",
+            inline=True
+        )
+        embed.add_field(
+            name="Conversation History",
+            value="✅ Enabled" if user_prefs.use_conversation_history else "❌ Disabled",
+            inline=True
+        )
+        embed.add_field(
+            name="Content Filter",
+            value=user_prefs.content_filter_level.title(),
+            inline=True
+        )
+        embed.add_field(
+            name="Response Format",
+            value=user_prefs.preferred_response_format.title(),
+            inline=True
+        )
+        embed.add_field(
+            name="📖 How to Change",
+            value="Use `/preferences setting:<name> value:<new_value>` to update a setting",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    # Validate and update setting
+    if value is None:
+        await interaction.response.send_message(
+            "❌ Please provide a value for the setting.",
+            ephemeral=True
+        )
+        return
+    
+    try:
+        # Convert and validate value based on setting
+        if setting == "temperature":
+            new_value = float(value)
+            if not 0.0 <= new_value <= 1.0:
+                raise ValueError("Temperature must be between 0.0 and 1.0")
+        elif setting == "max_tokens":
+            new_value = int(value)
+            if not 1 <= new_value <= 2048:
+                raise ValueError("Max tokens must be between 1 and 2048")
+        elif setting == "use_conversation_history":
+            new_value = value.lower() in ['true', 'yes', '1', 'on', 'enabled']
+        elif setting == "content_filter_level":
+            if value.lower() not in ['low', 'medium', 'high']:
+                raise ValueError("Content filter level must be 'low', 'medium', or 'high'")
+            new_value = value.lower()
+        elif setting == "preferred_response_format":
+            if value.lower() not in ['text', 'detailed', 'concise']:
+                raise ValueError("Response format must be 'text', 'detailed', or 'concise'")
+            new_value = value.lower()
+        else:
+            await interaction.response.send_message(
+                "❌ Invalid setting. Use the dropdown to select a valid setting.",
+                ephemeral=True
+            )
+            return
+        
+        # Update the preference
+        if bot_state.update_user_preference(user_id, setting, new_value):
+            await interaction.response.send_message(
+                f"✅ Updated {setting} to: `{new_value}`",
+                ephemeral=True
+            )
+            logger.info(f"User {interaction.user.name} updated {setting} to {new_value}")
+        else:
+            await interaction.response.send_message(
+                "❌ Failed to update preference.",
+                ephemeral=True
+            )
+            
+    except ValueError as e:
+        await interaction.response.send_message(
+            f"❌ Invalid value: {str(e)}",
+            ephemeral=True
+        )
+
+# --- Slash Command: /conversation ---
+@bot.tree.command(name="conversation", description="Manage your conversation history.")
+@app_commands.describe(action="Action to perform on conversation history")
+@app_commands.choices(action=[
+    app_commands.Choice(name="view", value="view"),
+    app_commands.Choice(name="clear", value="clear"),
+    app_commands.Choice(name="export", value="export"),
+])
+async def conversation(interaction: discord.Interaction, action: str):
+    """Manage conversation history"""
+    user_id = interaction.user.id
+    
+    if action == "view":
+        history = bot_state.conversation_history.get_history(user_id)
+        if not history:
+            await interaction.response.send_message(
+                "📝 You have no conversation history yet. Start chatting with `/ask` to build up history!",
+                ephemeral=True
+            )
+            return
+        
+        embed = discord.Embed(
+            title="🧠 Your Conversation History",
+            color=discord.Color.green(),
+            description=f"Last {len(history)} messages"
+        )
+        
+        for i, msg in enumerate(history[-10:], 1):  # Show last 10 messages
+            role_emoji = "👤" if msg.role == "user" else "🤖"
+            content_preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+            embed.add_field(
+                name=f"{role_emoji} {msg.role.title()} - {msg.timestamp.strftime('%H:%M')}",
+                value=content_preview,
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    elif action == "clear":
+        bot_state.conversation_history.clear_history(user_id)
+        # Also clear active chat session
+        if user_id in bot_state.active_chats:
+            del bot_state.active_chats[user_id]
+        
+        await interaction.response.send_message(
+            "🗑️ Conversation history cleared! Your next query will start a fresh conversation.",
+            ephemeral=True
+        )
+        logger.info(f"User {interaction.user.name} cleared their conversation history")
+        
+    elif action == "export":
+        history = bot_state.conversation_history.get_history(user_id)
+        if not history:
+            await interaction.response.send_message(
+                "📝 You have no conversation history to export.",
+                ephemeral=True
+            )
+            return
+        
+        # Create export content
+        export_content = f"Conversation History Export for {interaction.user.name}\n"
+        export_content += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        export_content += "=" * 50 + "\n\n"
+        
+        for msg in history:
+            export_content += f"[{msg.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] {msg.role.upper()}:\n"
+            export_content += f"{msg.content}\n\n"
+        
+        # Send as file
+        temp_file = None
+        try:
+            temp_file = create_secure_temp_file(export_content)
+            await interaction.response.send_message(
+                "📄 Here's your conversation history export:",
+                file=discord.File(temp_file, filename=f"conversation_history_{datetime.now().strftime('%Y%m%d')}.txt"),
+                ephemeral=True
+            )
+        except Exception as e:
+            logger.error(f"Error exporting conversation history: {sanitize_error_message(str(e))}")
+            await interaction.response.send_message(
+                "❌ Failed to export conversation history.",
+                ephemeral=True
+            )
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
 
 # --- Slash Command: /status ---
 @bot.tree.command(name="status", description="Check bot status and configuration.")
 async def status(interaction: discord.Interaction):
     """Show current bot status and configuration"""
+    user_id = interaction.user.id
+    user_prefs = bot_state.get_user_preferences(user_id)
+    
     api_key_status = "✅ Set" if bot_state.gemini_api_key else "❌ Not set"
     model_status = f"✅ {bot_state.selected_model_name}" if bot_state.selected_model_name else "❌ Not selected"
     model_ready = "✅ Ready" if bot_state.gemini_model else "❌ Not initialized"
@@ -414,12 +775,44 @@ async def status(interaction: discord.Interaction):
         color=discord.Color.blue(),
         timestamp=datetime.now()
     )
+    
+    # Bot configuration
     embed.add_field(name="API Key", value=api_key_status, inline=True)
     embed.add_field(name="Model", value=model_status, inline=True)
     embed.add_field(name="Model Ready", value=model_ready, inline=True)
+    
+    # Usage statistics
     embed.add_field(name="Total Queries", value=bot_state.usage_stats["queries"], inline=True)
     embed.add_field(name="Total Errors", value=bot_state.usage_stats["errors"], inline=True)
-    embed.add_field(name="Cooldown", value=f"{COOLDOWN_SECONDS}s", inline=True)
+    embed.add_field(name="Filtered Queries", value=bot_state.usage_stats["filtered_queries"], inline=True)
+    
+    # User-specific status
+    history_count = len(bot_state.conversation_history.get_history(user_id))
+    has_active_chat = user_id in bot_state.active_chats
+    
+    embed.add_field(name="Your History", value=f"{history_count} messages", inline=True)
+    embed.add_field(name="Active Chat", value="✅ Yes" if has_active_chat else "❌ No", inline=True)
+    embed.add_field(name="History Enabled", value="✅ Yes" if user_prefs.use_conversation_history else "❌ No", inline=True)
+    
+    # Enhanced features
+    embed.add_field(
+        name="🎛️ Your Settings",
+        value=f"Temperature: {user_prefs.temperature}\n"
+              f"Max Tokens: {user_prefs.max_tokens}\n"
+              f"Filter Level: {user_prefs.content_filter_level}\n"
+              f"Response Format: {user_prefs.preferred_response_format}",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="💡 New Features",
+        value="• Conversation history and context\n"
+              "• Customizable AI parameters\n"
+              "• Content filtering\n"
+              "• Response format preferences\n"
+              "• Usage `/preferences` and `/conversation`",
+        inline=False
+    )
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -461,15 +854,17 @@ async def help_command(interaction: discord.Interaction):
     """Show help information"""
     embed = discord.Embed(
         title="🤖 Gemini Discord Bot Help",
-        description="This bot allows you to interact with Google's Gemini AI models.",
+        description="Advanced AI bot with conversation history, user preferences, and content filtering.",
         color=discord.Color.blue()
     )
     
     embed.add_field(
         name="👤 User Commands",
-        value="`/ask <query>` - Ask a question to the AI\n"
-              "`/status` - Check bot status\n"
-              "`/models` - List available models\n"
+        value="`/ask <query>` - Ask a question to the AI (with history & preferences)\n"
+              "`/status` - Check bot status and your settings\n"
+              "`/models` - List available AI models\n"
+              "`/preferences` - View/change your AI preferences\n"
+              "`/conversation` - Manage your conversation history\n"
               "`/help` - Show this help message",
         inline=False
     )
@@ -482,13 +877,36 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
+        name="✨ New Features",
+        value="• **Conversation History**: AI remembers your chat context\n"
+              "• **Custom Preferences**: Adjust temperature, tokens, filters\n"
+              "• **Content Filtering**: Automatic inappropriate content detection\n"
+              "• **Response Formats**: Choose detailed, concise, or standard\n"
+              "• **Export History**: Download your conversation history",
+        inline=False
+    )
+    
+    embed.add_field(
         name="🛡️ Security Features",
-        value="• API keys are stored securely in memory\n"
-              "• Input validation and sanitization\n"
-              "• Rate limiting and cooldowns\n"
+        value="• API keys stored securely in memory\n"
+              "• Advanced input validation and sanitization\n"
+              "• Rate limiting and per-user cooldowns\n"
+              "• Content filtering with adjustable levels\n"
               "• Error message sanitization",
         inline=False
     )
+    
+    embed.add_field(
+        name="📋 Quick Setup",
+        value="1. Admin sets API key with `/apikey`\n"
+              "2. Admin selects model with `/model`\n"
+              "3. Users customize preferences with `/preferences`\n"
+              "4. Start chatting with `/ask`!\n"
+              "5. Manage history with `/conversation`",
+        inline=False
+    )
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
     
     embed.add_field(
         name="📋 Setup",
